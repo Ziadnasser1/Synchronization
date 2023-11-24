@@ -1,14 +1,16 @@
-import java.io.FileDescriptor;
-import java.io.FileOutputStream;
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Scanner;
+
 import static java.lang.Thread.sleep;
 
 class Device extends Thread {
     public String name, type;
     public int connectionID;
     public Router router;
+    public String status;
 
     public Device(String name, String type, Router router) {
         this.name = name;
@@ -20,49 +22,58 @@ class Device extends Thread {
     @Override
     public void run() {
         try {
-            router.sem.P(this);
+            router.semaphore.wait(this);
             connectionID = router.connect(this);
-
-            System.out.println("Connection " + connectionID + ": " + name + " Occupied");
-            logIn();
-            onlineActivity();
+            status = "Connection " + connectionID + ": " + name + " Occupied";
+            LogIn();
+            OnlineActivity();
             router.disconnect(this);
-
-            router.sem.V(this, connectionID);
+            router.semaphore.signal();
+            status = "Connection " + connectionID + ": " + name + " Disconnected";
 
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
     }
 
-    public void onlineActivity() throws InterruptedException {
+    public void OnlineActivity() throws InterruptedException {
         System.out.println("Connection " + connectionID + ": " + name + " Performs online activity");
-        sleep((long) (Math.random() * 2000));
+        Thread.sleep((long) (Math.random() * 2000));
     }
 
-    public void logIn() throws InterruptedException {
+    public void LogIn() throws InterruptedException {
         System.out.println("Connection " + connectionID + ": " + name + " Logged in");
     }
 }
 
 class Router {
-    public ArrayList<Device> connectedDevices;
-    public Semaphore sem;
+    public boolean[] connected;
+    public int maxDevices, currentConnectedDevices;
+    public Semaphore semaphore;
 
     Router(int maxDevices) {
-        connectedDevices = new ArrayList<>();
-        sem = new Semaphore(maxDevices);
+        this.maxDevices = maxDevices;
+        semaphore = new Semaphore(maxDevices);
+        connected = new boolean[maxDevices];
     }
 
     public synchronized int connect(Device device) throws InterruptedException {
-        int connectionID = connectedDevices.size() + 1;
-        connectedDevices.add(device);
-        sleep(100);
-        return connectionID;
+        for (int i = 0; i < maxDevices; i++) {
+            if (!connected[i]) {
+                currentConnectedDevices++;
+                device.connectionID = i + 1;
+                connected[i] = true;
+                sleep(200);
+                break;
+            }
+        }
+        return device.connectionID;
     }
 
     public synchronized void disconnect(Device device) {
-        connectedDevices.remove(device);
+        currentConnectedDevices--;
+        connected[device.connectionID - 1] = false;
+        notify();
         System.out.println("Connection " + device.connectionID + ": " + device.name + " Logged out");
     }
 }
@@ -74,7 +85,7 @@ class Semaphore {
         this.value = value;
     }
 
-    public synchronized void P(Device device) throws InterruptedException {
+    public synchronized void wait(Device device) throws InterruptedException {
         value--;
         if (value < 0) {
             System.out.println(device.name + " (" + device.type + ")" + " arrived and waiting");
@@ -82,17 +93,20 @@ class Semaphore {
         } else {
             System.out.println(device.name + " (" + device.type + ")" + " arrived");
         }
+
+        device.router.connect(device);
     }
 
-    public synchronized void V(Device device, int connectionID) {
-        System.out.println("Connection " + connectionID + ": (" + device.name + ")" + " logged out");
+    public synchronized void signal() {
         value++;
-        if (value <= 0) notify();
+        if (value <= 0) {
+            notify();
+        }
     }
 }
 
 public class Network {
-    public static void main(String[] args) throws InterruptedException {
+    public static void main(String[] args) throws InterruptedException, FileNotFoundException {
         int numberOfConnections, numberOfDevices;
         ArrayList<Device> devices = new ArrayList<>();
 
@@ -105,30 +119,25 @@ public class Network {
         System.out.println("What is the number of devices Clients want to connect?");
         numberOfDevices = input.nextInt();
 
-        System.out.println("Enter details for device name (i.e. C1) and type (i.e. mobile, pc, tablet...): ");
+        System.out.println("Enter details for device name (i.e., C1) and type (i.e., mobile, pc, tablet...): ");
         for (int i = 0; i < numberOfDevices; i++) {
             Device newDevice = new Device(input.next(), input.next(), router);
             devices.add(newDevice);
         }
 
-        try (PrintStream fileStream = new PrintStream(new FileOutputStream("output.txt"))) {
-            System.setOut(fileStream);
+        PrintStream originalOut = System.out;
+        PrintStream fileOut = new PrintStream(new File("output.txt"));
+        System.setOut(fileOut);
 
-            for (Device device : devices) {
-                device.start();
-            }
-
-            try {
-                for (Device device : devices) {
-                    device.join();
-                }
-            } catch (InterruptedException e) {
-                System.out.println("Join interrupted");
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        } finally {
-            System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.out)));
+        for (int i = 0; i < numberOfDevices; i++) {
+            sleep(200);
+            devices.get(i).start();
         }
+
+        for (Device device : devices) {
+            device.join();
+        }
+
+        System.setOut(originalOut);
     }
 }
